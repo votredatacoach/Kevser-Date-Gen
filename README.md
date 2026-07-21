@@ -4,7 +4,7 @@ Générateur reproductible de données synthétiques pour le modèle de facturat
 
 Le profil `client`, utilisé par défaut, vise environ **3,2 millions de lignes métier** : plus de dix fois le premier jeu de démonstration (270 438 lignes métier). La génération est partitionnée pour ne pas charger tout le dataset en mémoire.
 
-Benchmark vérifié avec la graine par défaut : **3 236 579 lignes métier**, **3 434 042 lignes au total**, 48 000 contrats et 820 Mio de CSV, générés en 137 secondes sur la machine de développement. La durée dépend de la machine et du disque.
+Benchmark vérifié avec la graine par défaut : **3 236 579 lignes métier**, **3 434 042 lignes au total**, 48 000 contrats et 820 Mio de CSV, générés en environ 2 min 30 sur la machine de développement. La durée dépend de la machine et du disque.
 
 > Aucune donnée personnelle réelle n’est utilisée. Les noms, coordonnées, entreprises, identifiants et opérations sont entièrement synthétiques.
 
@@ -89,11 +89,11 @@ Le compte Windows courant doit pouvoir créer la base et le service SQL Server d
 
 ### Import manuel dans SSMS
 
-1. Ouvrez SSMS et activez **Mode SQLCMD** dans le menu **Requête**.
-2. Exécutez `sql/00_create_database.sql`.
-3. Exécutez `sql/01_schema.sql`, puis `02_schema_corrections.sql`.
-4. Dans `03_bulk_load.sql`, adaptez `DatabaseName` et `DataRoot` en haut du fichier.
-5. Exécutez `03_bulk_load.sql`, `04_indexes.sql`, puis `05_validation.sql`.
+1. Ouvrez `sql/99_run_all.sql` dans SSMS et activez **Mode SQLCMD** dans le menu **Requête**.
+2. Adaptez `DatabaseName` et `DataRoot` en haut du fichier.
+3. Exécutez le script : il appelle dans l’ordre la création, le schéma, le chargement, les index et les validations.
+
+Les six scripts numérotés peuvent également être lancés séparément en leur fournissant les variables SQLCMD. `99_run_all.sql` est le parcours manuel recommandé.
 
 Le chargement utilise `BULK INSERT`, des lots de 50 000 lignes et une réactivation contrôlée des contraintes. Il refuse une base qui contient déjà des contrats afin d’éviter un doublonnage accidentel.
 

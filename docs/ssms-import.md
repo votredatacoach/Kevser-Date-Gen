@@ -1,6 +1,6 @@
 # Guide d’import SSMS
 
-Les scripts se trouvent dans le dossier `sql/` de chaque génération.
+Les scripts se trouvent dans le dossier `sql/` de chaque génération. Pour un import manuel, ouvrez `99_run_all.sql`, adaptez ses deux variables puis exécutez-le en mode SQLCMD.
 
 ## Ordre d’exécution
 
@@ -11,7 +11,7 @@ Les scripts se trouvent dans le dossier `sql/` de chaque génération.
 5. `04_indexes.sql`
 6. `05_validation.sql`
 
-Activez le mode SQLCMD dans SSMS. Modifiez les variables `DatabaseName` et `DataRoot` au début des scripts. `DataRoot` désigne le dossier qui contient `csv/`.
+`99_run_all.sql` définit `DatabaseName` et `DataRoot`, puis appelle les six scripts dans cet ordre. `DataRoot` désigne le dossier qui contient `csv/`. Les scripts numérotés n’imposent aucune valeur par défaut, afin que les paramètres `sqlcmd -v` du script PowerShell ne soient jamais écrasés.
 
 ## Permissions de fichiers
 

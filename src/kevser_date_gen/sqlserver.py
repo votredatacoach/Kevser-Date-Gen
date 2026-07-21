@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +11,15 @@ from .engine import LOAD_ORDER, _ddl_column_types, _schema_corrections_sql, _val
 
 
 def _use_variable(text: str) -> str:
-    return text.replace("USE [Adventure];", "USE [$(DatabaseName)];")
+    return re.sub(
+        r"(?im)^\s*use\s+(?:\[Adventure\]|Adventure)\s*;?\s*$",
+        "USE [$(DatabaseName)];",
+        text,
+    )
 
 
 def _create_database_sql() -> str:
-    return """-- Exécuter en mode SQLCMD dans SSMS.
-:setvar DatabaseName "Adventure"
+    return """-- Variable fournie par sqlcmd -v ou par 99_run_all.sql.
 USE [master];
 GO
 IF DB_ID(N'$(DatabaseName)') IS NULL
@@ -33,9 +37,7 @@ def _bulk_loader_sql(
 ) -> str:
     schema = _ddl_column_types()
     lines = [
-        "-- Exécuter en mode SQLCMD dans SSMS.",
-        ':setvar DatabaseName "Adventure"',
-        ':setvar DataRoot "C:\\Temp\\Kevser-Date-Gen\\generated\\client"',
+        "-- Variables fournies par sqlcmd -v ou par 99_run_all.sql.",
         "USE [$(DatabaseName)];",
         "GO",
         "SET NOCOUNT ON;",
@@ -102,8 +104,7 @@ def _bulk_loader_sql(
 
 
 def _indexes_sql() -> str:
-    return """:setvar DatabaseName "Adventure"
-USE [$(DatabaseName)];
+    return """USE [$(DatabaseName)];
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RelevesHeures_Contrat_DateDebut')
     CREATE INDEX [IX_RelevesHeures_Contrat_DateDebut]
@@ -123,6 +124,19 @@ GO
 """
 
 
+def _run_all_sql() -> str:
+    return """-- Point d'entrée manuel : ouvrir ce fichier dans SSMS en mode SQLCMD.
+:setvar DatabaseName "Adventure"
+:setvar DataRoot "C:\\Temp\\Kevser-Date-Gen\\generated\\client"
+:r .\\00_create_database.sql
+:r .\\01_schema.sql
+:r .\\02_schema_corrections.sql
+:r .\\03_bulk_load.sql
+:r .\\04_indexes.sql
+:r .\\05_validation.sql
+"""
+
+
 def write_sql_server_kit(
     *,
     target: Path,
@@ -139,6 +153,7 @@ def write_sql_server_kit(
         "03_bulk_load.sql": _bulk_loader_sql(columns, row_counts, post_updates),
         "04_indexes.sql": _indexes_sql(),
         "05_validation.sql": _use_variable(_validation_sql()),
+        "99_run_all.sql": _run_all_sql(),
     }
     for name, content in files.items():
         (target / name).write_text(content, encoding="utf-8-sig", newline="\n")
