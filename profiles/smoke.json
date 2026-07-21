@@ -1,0 +1,9 @@
+{
+  "name": "smoke",
+  "default_partitions": 1,
+  "contracts_per_partition": 50,
+  "target_contracts": 50,
+  "period": ["2023-07-01", "2026-06-30"],
+  "output": "csv",
+  "purpose": "Test rapide du pipeline"
+}

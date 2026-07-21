@@ -1,0 +1,22 @@
+name: Benchmark profil client
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e .
+      - run: python -m kevser_date_gen --profile client --output generated/client
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generation-report
+          path: |
+            generated/client/generation-report.json
+            generated/client/manifest.sha256

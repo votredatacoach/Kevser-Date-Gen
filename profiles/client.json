@@ -1,0 +1,11 @@
+{
+  "name": "client",
+  "default_partitions": 12,
+  "contracts_per_partition": 4000,
+  "target_contracts": 48000,
+  "benchmarked_business_rows": 3236579,
+  "benchmarked_total_rows": 3434042,
+  "period": ["2023-07-01", "2026-06-30"],
+  "output": "csv",
+  "purpose": "Livraison par défaut, supérieure à dix fois le prototype"
+}
