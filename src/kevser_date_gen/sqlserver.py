@@ -24,10 +24,23 @@ USE [master];
 GO
 IF DB_ID(N'$(DatabaseName)') IS NULL
 BEGIN
-    EXEC(N'CREATE DATABASE [' + REPLACE('$(DatabaseName)', ']', ']]') + N']');
+    DECLARE @DatabaseName sysname = N'$(DatabaseName)';
+    DECLARE @CreateDatabaseSql nvarchar(max) = N'CREATE DATABASE ' + QUOTENAME(@DatabaseName);
+    EXEC sys.sp_executesql @CreateDatabaseSql;
 END;
 GO
 """
+
+
+def _corrected_column_types() -> dict[tuple[str, str], str]:
+    pattern = re.compile(
+        r"ALTER TABLE \[([^]]+)\]\.\[([^]]+)\] ALTER COLUMN \[([^]]+)\] ([^ ]+) NULL;",
+        re.I,
+    )
+    return {
+        (f"{schema}.{table}", column): sql_type.lower()
+        for schema, table, column, sql_type in pattern.findall(_schema_corrections_sql())
+    }
 
 
 def _bulk_loader_sql(
@@ -36,6 +49,7 @@ def _bulk_loader_sql(
     post_updates: list[str],
 ) -> str:
     schema = _ddl_column_types()
+    type_overrides = _corrected_column_types()
     lines = [
         "-- Variables fournies par sqlcmd -v ou par 99_run_all.sql.",
         "USE [$(DatabaseName)];",
@@ -59,13 +73,18 @@ def _bulk_loader_sql(
             continue
         sch, name = table.split(".", 1)
         table_columns = columns[table]
+        writable_columns = [
+            column
+            for column in table_columns
+            if schema[table][column].strip().lower() not in {"timestamp", "rowversion"}
+        ]
         stage = f"#Stage_{name}"
         file_name = f"{table.replace('.', '__')}.csv"
         stage_defs = ",\n    ".join(f"[{column}] nvarchar(max) NULL" for column in table_columns)
-        quoted = ", ".join(f"[{column}]" for column in table_columns)
+        quoted = ", ".join(f"[{column}]" for column in writable_columns)
         conversions = []
-        for column in table_columns:
-            sql_type = schema[table][column]
+        for column in writable_columns:
+            sql_type = type_overrides.get((table, column), schema[table][column])
             cleaned = f"NULLIF(REPLACE([{column}], CHAR(13), N''), N'')"
             conversions.append(f"TRY_CONVERT({sql_type}, {cleaned})")
         select_values = ",\n    ".join(conversions)
