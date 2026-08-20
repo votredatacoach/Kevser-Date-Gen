@@ -9,6 +9,7 @@ from pathlib import Path
 
 from kevser_date_gen.config import DEFAULT_SHARDS
 from kevser_date_gen.engine import LOAD_ORDER
+from kevser_date_gen.sqlserver import _bulk_loader_sql, _create_database_sql, _run_all_sql
 from kevser_date_gen.streaming import generate_bundle, resolve_shards
 
 
@@ -56,6 +57,48 @@ class GenerationTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle, delimiter="|"))
             ids = [row["Id"] for row in rows]
             self.assertEqual(len(ids), len(set(ids)))
+
+    def test_sql_server_kit_is_safe_for_ssms_and_rowversion(self) -> None:
+        create_database = _create_database_sql()
+        self.assertIn("IF N'$(RecreateDatabase)' = N'1'", create_database)
+        self.assertIn("SET SINGLE_USER WITH ROLLBACK IMMEDIATE", create_database)
+        self.assertIn("DROP DATABASE", create_database)
+        self.assertIn("QUOTENAME(@DatabaseName)", create_database)
+        self.assertNotIn("+ REPLACE('$(DatabaseName)'", create_database)
+
+        bulk_loader = _bulk_loader_sql(
+            {
+                "Activite.DossierAgenceMatriculeInterimaires": [
+                    "DossierAgenceId",
+                    "Matricule",
+                    "RowVersion",
+                    "DateCreation",
+                ],
+                "Activite.Factures": ["Id", "NetAFacturer"],
+                "Activite.LignesFacture": ["Id", "TauxTVA"],
+            },
+            {
+                "Activite.DossierAgenceMatriculeInterimaires": 1,
+                "Activite.Factures": 1,
+                "Activite.LignesFacture": 1,
+            },
+            [],
+        )
+        self.assertIn("[RowVersion] nvarchar(max) NULL", bulk_loader)
+        self.assertIn("DROP TABLE IF EXISTS #Stage_DossierAgenceMatriculeInterimaires;", bulk_loader)
+        insert = bulk_loader.split(
+            "INSERT INTO [Activite].[DossierAgenceMatriculeInterimaires]", 1
+        )[1].split("FROM #Stage_DossierAgenceMatriculeInterimaires", 1)[0]
+        self.assertNotIn("[RowVersion]", insert)
+        self.assertNotIn("TRY_CONVERT(timestamp", insert)
+        self.assertIn("TRY_CONVERT(decimal(18,2), NULLIF(REPLACE([NetAFacturer]", bulk_loader)
+        self.assertIn("TRY_CONVERT(decimal(18,4), NULLIF(REPLACE([TauxTVA]", bulk_loader)
+
+        run_all = _run_all_sql()
+        self.assertIn(":On Error exit", run_all)
+        self.assertIn(':setvar RecreateDatabase "0"', run_all)
+        self.assertNotIn(":setvar SqlRoot", run_all)
+        self.assertIn(":r $(DataRoot)\\sql\\00_create_database.sql", run_all)
 
 
 if __name__ == "__main__":

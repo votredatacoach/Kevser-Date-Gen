@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import SOURCE_DDL
-from .engine import LOAD_ORDER, _ddl_column_types, _schema_corrections_sql, _validation_sql
+from .engine import (
+    LOAD_ORDER,
+    _ddl_column_types,
+    _schema_corrections_sql,
+    _sqlserver_column_type,
+    _validation_sql,
+)
 
 
 def _use_variable(text: str) -> str:
@@ -19,12 +25,27 @@ def _use_variable(text: str) -> str:
 
 
 def _create_database_sql() -> str:
-    return """-- Variable fournie par sqlcmd -v ou par 99_run_all.sql.
+    return """-- Variables fournies par sqlcmd -v ou par 99_run_all.sql.
+-- RecreateDatabase=1 supprime entièrement la base cible avant de la recréer.
 USE [master];
 GO
-IF DB_ID(N'$(DatabaseName)') IS NULL
+DECLARE @DatabaseName sysname = N'$(DatabaseName)';
+
+IF N'$(RecreateDatabase)' = N'1' AND DB_ID(@DatabaseName) IS NOT NULL
 BEGIN
-    EXEC(N'CREATE DATABASE [' + REPLACE('$(DatabaseName)', ']', ']]') + N']');
+    DECLARE @DropDatabaseSql nvarchar(max);
+    SET @DropDatabaseSql =
+        N'ALTER DATABASE ' + QUOTENAME(@DatabaseName)
+        + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE '
+        + QUOTENAME(@DatabaseName) + N';';
+    EXEC sys.sp_executesql @DropDatabaseSql;
+END;
+
+IF DB_ID(@DatabaseName) IS NULL
+BEGIN
+    DECLARE @CreateDatabaseSql nvarchar(max);
+    SET @CreateDatabaseSql = N'CREATE DATABASE ' + QUOTENAME(@DatabaseName);
+    EXEC sys.sp_executesql @CreateDatabaseSql;
 END;
 GO
 """
@@ -62,15 +83,21 @@ def _bulk_loader_sql(
         stage = f"#Stage_{name}"
         file_name = f"{table.replace('.', '__')}.csv"
         stage_defs = ",\n    ".join(f"[{column}] nvarchar(max) NULL" for column in table_columns)
-        quoted = ", ".join(f"[{column}]" for column in table_columns)
+        target_columns = [
+            column
+            for column in table_columns
+            if schema[table][column].strip().lower() not in {"timestamp", "rowversion"}
+        ]
+        quoted = ", ".join(f"[{column}]" for column in target_columns)
         conversions = []
-        for column in table_columns:
-            sql_type = schema[table][column]
+        for column in target_columns:
+            sql_type = _sqlserver_column_type(table, column, schema[table][column])
             cleaned = f"NULLIF(REPLACE([{column}], CHAR(13), N''), N'')"
             conversions.append(f"TRY_CONVERT({sql_type}, {cleaned})")
         select_values = ",\n    ".join(conversions)
         lines.extend([
             f"PRINT N'Chargement {table} — {row_counts.get(table, 0):,} lignes';",
+            f"DROP TABLE IF EXISTS {stage};",
             f"CREATE TABLE {stage} (\n    {stage_defs}\n);",
             f"BULK INSERT {stage}",
             f"FROM '$(DataRoot)\\csv\\{file_name}'",
@@ -126,14 +153,16 @@ GO
 
 def _run_all_sql() -> str:
     return """-- Point d'entrée manuel : ouvrir ce fichier dans SSMS en mode SQLCMD.
+:On Error exit
 :setvar DatabaseName "Adventure"
+:setvar RecreateDatabase "0"
 :setvar DataRoot "C:\\Temp\\Kevser-Date-Gen\\generated\\client"
-:r .\\00_create_database.sql
-:r .\\01_schema.sql
-:r .\\02_schema_corrections.sql
-:r .\\03_bulk_load.sql
-:r .\\04_indexes.sql
-:r .\\05_validation.sql
+:r $(DataRoot)\\sql\\00_create_database.sql
+:r $(DataRoot)\\sql\\01_schema.sql
+:r $(DataRoot)\\sql\\02_schema_corrections.sql
+:r $(DataRoot)\\sql\\03_bulk_load.sql
+:r $(DataRoot)\\sql\\04_indexes.sql
+:r $(DataRoot)\\sql\\05_validation.sql
 """
 
 
