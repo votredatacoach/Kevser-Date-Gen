@@ -1363,8 +1363,7 @@ def _write_insert_sql(
         handle.write("\nCOMMIT TRANSACTION;\nGO\n")
 
 
-def _schema_corrections_sql() -> str:
-    money_columns = (
+_SQLSERVER_MONEY_COLUMNS = (
         ("Activite", "Factures", "NetAFacturer"), ("Activite", "Factures", "MontantHt"),
         ("Activite", "HorairesEtCouts", "DureeHebdo"), ("Activite", "HorairesEtCouts", "SalaireReference"),
         ("Activite", "HorairesEtCouts", "BaseSalaireReference"), ("Activite", "HorairesEtCouts", "SalaireRemuneration"),
@@ -1379,20 +1378,33 @@ def _schema_corrections_sql() -> str:
         ("Activite", "MouvementsReleveHeures", "Mercredi"), ("Activite", "MouvementsReleveHeures", "Jeudi"),
         ("Activite", "MouvementsReleveHeures", "Vendredi"), ("Activite", "MouvementsReleveHeures", "Samedi"),
         ("Activite", "MouvementsReleveHeures", "Dimanche"), ("Activite", "Societes", "Capital"),
-    )
-    rate_columns = (
+)
+_SQLSERVER_RATE_COLUMNS = (
         ("Activite", "ContratsModelesPoste", "TauxInteressement"),
         ("Activite", "HorairesEtCouts", "Coefficient"),
         ("Activite", "LignesFacture", "TauxTVA"), ("Activite", "LignesFacture", "Coefficient"),
         ("Activite", "LignesReleveHeures", "Coefficient"),
-    )
+)
+
+
+def _sqlserver_column_type(table: str, column: str, ddl_type: str) -> str:
+    schema, table_name = table.split(".", 1)
+    key = (schema, table_name, column)
+    if key in _SQLSERVER_MONEY_COLUMNS:
+        return "decimal(18,2)"
+    if key in _SQLSERVER_RATE_COLUMNS:
+        return "decimal(18,4)"
+    return ddl_type
+
+
+def _schema_corrections_sql() -> str:
     lines = [
         "USE [Adventure];", "GO", "-- Le DDL source utilise DECIMAL sans échelle, donc DECIMAL(18,0).",
         "-- Ces corrections préservent les centimes et les coefficients avant chargement.",
     ]
-    for schema, table, column in money_columns:
+    for schema, table, column in _SQLSERVER_MONEY_COLUMNS:
         lines.append(f"ALTER TABLE [{schema}].[{table}] ALTER COLUMN [{column}] decimal(18,2) NULL;")
-    for schema, table, column in rate_columns:
+    for schema, table, column in _SQLSERVER_RATE_COLUMNS:
         lines.append(f"ALTER TABLE [{schema}].[{table}] ALTER COLUMN [{column}] decimal(18,4) NULL;")
     lines.extend(["GO", ""])
     return "\n".join(lines)

@@ -1,6 +1,8 @@
 # Guide d’import SSMS
 
-Les scripts se trouvent dans le dossier `sql/` de chaque génération. Pour un import manuel, ouvrez `99_run_all.sql`, adaptez ses deux variables puis exécutez-le en mode SQLCMD.
+Les scripts se trouvent dans le dossier `sql/` de chaque génération. Pour un import manuel, ouvrez `99_run_all.sql`, adaptez ses variables puis exécutez-le en mode SQLCMD.
+
+`RecreateDatabase` vaut `0` par défaut. La valeur `1` force les déconnexions, supprime entièrement la base cible si elle existe, puis la recrée. N’activez cette valeur que pour une base dont la suppression est volontaire.
 
 ## Ordre d’exécution
 

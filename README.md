@@ -85,12 +85,22 @@ Installez les outils en ligne de commande SQL Server (`sqlcmd`), puis lancez :
 .\scripts\validate-sqlserver.ps1 -Server ".\SQLEXPRESS" -Database "Adventure"
 ```
 
+Pour remplacer volontairement une base existante, ajoutez `-Recreate`. Cette option force la déconnexion des sessions, supprime entièrement la base cible, puis la recrée avant l’import :
+
+```powershell
+.\scripts\import-sqlserver.ps1 `
+  -Server ".\SQLEXPRESS" `
+  -Database "Adventure" `
+  -DataRoot "$PWD\generated\client" `
+  -Recreate
+```
+
 Le compte Windows courant doit pouvoir créer la base et le service SQL Server doit pouvoir lire le dossier CSV. Pour une instance locale, un chemin local absolu est recommandé.
 
 ### Import manuel dans SSMS
 
 1. Ouvrez `sql/99_run_all.sql` dans SSMS et activez **Mode SQLCMD** dans le menu **Requête**.
-2. Adaptez `DatabaseName` et `DataRoot` en haut du fichier.
+2. Adaptez `DatabaseName`, `RecreateDatabase` et `DataRoot` en haut du fichier. `RecreateDatabase "1"` supprime entièrement une base cible existante ; conservez `"0"` pour le mode non destructif.
 3. Exécutez le script : il appelle dans l’ordre la création, le schéma, le chargement, les index et les validations.
 
 Les six scripts numérotés peuvent également être lancés séparément en leur fournissant les variables SQLCMD. `99_run_all.sql` est le parcours manuel recommandé.
