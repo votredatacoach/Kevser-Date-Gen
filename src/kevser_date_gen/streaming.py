@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from .company_reference import is_luhn_valid, load_company_reference
 from .config import DEFAULT_SHARDS, DatasetConfig, PROFILES
-from .engine import LOAD_ORDER, _csv_value, _ddl_column_types, build_dataset, is_luhn_valid, run_audit
+from .engine import LOAD_ORDER, _csv_value, _ddl_column_types, build_dataset, run_audit
 from .sqlserver import write_sql_server_kit
 
 
@@ -188,6 +189,7 @@ def _write_manifest(root: Path) -> dict[str, str]:
 
 def _audit_company_identities(csv_root: Path) -> dict[str, Any]:
     """Contrôle les identités d'entreprise après concaténation des partitions."""
+    reference = {record["siren"]: record for record in load_company_reference()}
     tables: dict[str, dict[str, Any]] = {}
     for table in ("Activite__Clients", "Activite__Societes"):
         path = csv_root / f"{table}.csv"
@@ -195,17 +197,24 @@ def _audit_company_identities(csv_root: Path) -> dict[str, Any]:
             rows = list(csv.DictReader(handle, delimiter="|"))
         sirens = [row["SIREN"] for row in rows]
         names = [row["RaisonSociale"].strip() for row in rows]
+        official_matches = [
+            value in reference
+            and reference[value]["raison_sociale"] == name
+            for value, name in zip(sirens, names)
+        ]
         tables[table.replace("__", ".")] = {
             "rows": len(rows),
             "distinct_sirens": len(set(sirens)),
             "distinct_company_names": len(set(names)),
             "all_sirens_are_nine_digits": all(len(value) == 9 and value.isdigit() for value in sirens),
             "all_sirens_pass_luhn": all(is_luhn_valid(value) for value in sirens),
+            "all_identities_match_official_snapshot": all(official_matches),
             "one_identity_per_row": len(set(sirens)) == len(rows) == len(set(names)),
         }
     passed = all(
         item["all_sirens_are_nine_digits"]
         and item["all_sirens_pass_luhn"]
+        and item["all_identities_match_official_snapshot"]
         and item["one_identity_per_row"]
         for item in tables.values()
     )
@@ -305,8 +314,17 @@ def generate_bundle(
             "default_minimum_10x_passed": minimum_check,
             "all_partition_audits_passed": True,
             "company_identity_audit": company_identity_audit,
+            "company_identity_source": {
+                "name": "Sirene - API Recherche d'entreprises",
+                "snapshot_date": "2026-08-27",
+                "reference_records": len(load_company_reference()),
+                "license": "Licence Ouverte 2.0",
+            },
             "partition_reports": shard_reports,
-            "privacy": "Toutes les identités et coordonnées sont synthétiques.",
+            "privacy": (
+                "Les identités publiques des personnes morales viennent du snapshot Sirene embarqué. "
+                "Les personnes, coordonnées opérationnelles, adresses et transactions restent synthétiques."
+            ),
         }
         (staging / "generation-report.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8"

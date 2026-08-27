@@ -2,7 +2,8 @@
 
 Le générateur remplit les 30 tables du DDL transmis par Kevser, mais concentre
 la volumétrie sur le flux analytique utile : contrats -> relevés d'heures ->
-factures. Toutes les identités sont synthétiques et déterministes.
+factures. Les entreprises viennent d'un snapshot Sirene ; le reste est
+synthétique et déterministe.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import DOCS_DIR, GENERATED_DIR, PROJECT_DIR, SOURCE_DDL, DatasetConfig, VolumeProfile
+from .company_reference import company_record, load_company_reference
 
 
 NAMESPACE = uuid.UUID("51e8f071-1793-4afb-bf2e-bb89afcd6c11")
@@ -167,104 +169,8 @@ CITIES = (
     "Angers", "Nîmes", "Clermont-Ferrand", "Tours", "Metz", "Besançon",
     "Orléans", "Mulhouse", "Caen", "Nancy", "Poitiers", "Annecy",
 )
-COMPANY_BRANDS = (
-    "Boréal", "Nova", "Hexagone", "Orion", "Élan", "Mosaïque",
-    "Prisme", "Aster", "Cobalt", "Rivage", "Alto", "Lumen",
-)
-COMPANY_ACTIVITIES = (
-    ("Industries", "2562B"),
-    ("Services", "6202A"),
-    ("Logistique", "4941A"),
-    ("Énergies", "4321A"),
-    ("Maintenance", "3312Z"),
-    ("Habitat", "4120A"),
-    ("Numérique", "6201Z"),
-    ("Santé", "8690F"),
-    ("Conseil", "7022Z"),
-    ("Production", "2229A"),
-)
-LEGAL_FORMS = ("SAS", "SARL", "SA")
-STAFFING_BRANDS = (
-    "Horizon Intérim", "Cap Emploi", "Trait d'Union Travail", "Nova Missions",
-    "Synergie Talents", "Relais Compétences", "Équipe Plus", "Tempo Ressources",
-)
-
-
 def stable_uuid(seed: int, entity: str, number: int | str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"{seed}|{entity}|{number}"))
-
-
-def luhn_check_digit(payload: str) -> str:
-    """Retourne la clé qui rend l'identifiant numérique valide selon Luhn."""
-    if not payload.isdigit():
-        raise ValueError("La base Luhn doit être entièrement numérique")
-    for candidate in range(10):
-        value = f"{payload}{candidate}"
-        total = 0
-        parity = len(value) % 2
-        for index, character in enumerate(value):
-            digit = int(character)
-            if index % 2 == parity:
-                digit *= 2
-                if digit > 9:
-                    digit -= 9
-            total += digit
-        if total % 10 == 0:
-            return str(candidate)
-    raise AssertionError("Aucune clé Luhn trouvée")
-
-
-def is_luhn_valid(value: str) -> bool:
-    if not value.isdigit() or len(value) < 2:
-        return False
-    return luhn_check_digit(value[:-1]) == value[-1]
-
-
-def synthetic_siren(number: int, *, family: int = 0) -> str:
-    """Crée un SIREN de démonstration unique, numérique et à clé Luhn valide."""
-    if number < 1 or number > 9_999_999:
-        raise ValueError("Le numéro d'entreprise doit être compris entre 1 et 9 999 999")
-    if family not in {0, 1}:
-        raise ValueError("La famille de SIREN doit valoir 0 ou 1")
-    body = f"{70_000_000 + family * 10_000_000 + number:08d}"
-    return f"{body}{luhn_check_digit(body)}"
-
-
-def synthetic_siret(siren: str, establishment_number: int) -> str:
-    """Crée un SIRET cohérent avec le SIREN de l'entreprise."""
-    if len(siren) != 9 or not is_luhn_valid(siren):
-        raise ValueError("Le SIREN doit contenir 9 chiffres et une clé Luhn valide")
-    nic_body = f"{establishment_number % 10_000:04d}"
-    payload = f"{siren}{nic_body}"
-    return f"{payload}{luhn_check_digit(payload)}"
-
-
-def synthetic_company_identity(number: int) -> tuple[str, str, str]:
-    """Retourne une raison sociale unique, sa forme juridique et son code APE."""
-    cursor = number - 1
-    brand = COMPANY_BRANDS[cursor % len(COMPANY_BRANDS)]
-    cursor //= len(COMPANY_BRANDS)
-    activity, ape_code = COMPANY_ACTIVITIES[cursor % len(COMPANY_ACTIVITIES)]
-    cursor //= len(COMPANY_ACTIVITIES)
-    city = CITIES[cursor % len(CITIES)]
-    cursor //= len(CITIES)
-    legal_form = LEGAL_FORMS[cursor % len(LEGAL_FORMS)]
-    cursor //= len(LEGAL_FORMS)
-    cycle = f" {cursor + 1}" if cursor else ""
-    return f"{brand} {activity} {city}{cycle} {legal_form}", legal_form, ape_code
-
-
-def synthetic_staffing_identity(number: int) -> tuple[str, str]:
-    """Retourne une raison sociale de groupe d'intérim unique et plausible."""
-    cursor = number - 1
-    brand = STAFFING_BRANDS[cursor % len(STAFFING_BRANDS)]
-    cursor //= len(STAFFING_BRANDS)
-    city = CITIES[cursor % len(CITIES)]
-    cursor //= len(CITIES)
-    legal_form = LEGAL_FORMS[cursor % len(LEGAL_FORMS)]
-    cursor //= len(LEGAL_FORMS)
-    cycle = f" {cursor + 1}" if cursor else ""
-    return f"{brand} {city}{cycle} {legal_form}", legal_form
 
 
 def stable_rng(seed: int, label: str) -> random.Random:
@@ -336,6 +242,15 @@ def _split_hours(total: Decimal) -> tuple[Decimal, ...]:
 
 def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int = 0) -> dict[str, Any]:
     rng = stable_rng(cfg.seed, f"build-{profile.name}")
+    reference_size = len(load_company_reference())
+    requested_clients = (partition + 1) * profile.clients
+    requested_societes = (partition + 1) * profile.societes
+    if requested_clients + requested_societes > reference_size:
+        raise ValueError(
+            "Le référentiel Sirene embarqué ne permet pas de garantir des identités "
+            f"distinctes : {requested_clients} clients + {requested_societes} sociétés "
+            f"demandés pour {reference_size} entreprises disponibles."
+        )
     created = date(2026, 7, 17)
     tables: dict[str, list[dict[str, Any]]] = {name: [] for name in LOAD_ORDER}
     post_load_updates: list[str] = []
@@ -504,12 +419,15 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
         risk = min(0.95, max(0.02, rng.betavariate(2.2, 8.5) + (0.07 if tier == "PME" else 0)))
         weight = rng.paretovariate(1.55) * {"STRAT": 3.2, "ETI": 1.7, "PME": 0.75}[tier]
         client_id = stable_uuid(cfg.seed, "client", i)
-        siren = synthetic_siren(company_number)
-        company_name, legal_form, ape_code = synthetic_company_identity(company_number)
+        company = company_record(company_number)
+        siren = company["siren"]
+        company_name = company["raison_sociale"]
+        legal_form = company["nature_juridique"]
+        ape_code = company["code_ape"]
         client_meta.append({
             "id": client_id, "tier": tier, "risk": risk, "weight": weight,
             "commune": commune, "index": company_number, "siren": siren,
-            "name": company_name,
+            "name": company_name, "siret_siege": company["siret_siege"],
         })
         client_weights.append(weight)
         tables["Activite.Clients"].append({
@@ -541,7 +459,7 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "ParametrageSpecificitesId": None,
             "NoteEllipro": {"STRAT": 5, "ETI": 4, "PME": 3}[tier],
             "IsNoteElliproReadOnly": False,
-            "CommentaireSiren": "Identifiant synthétique au format SIREN avec clé Luhn valide",
+            "CommentaireSiren": "Identité publique issue du snapshot Sirene du 2026-08-27",
             "CedexId": None,
             "CommuneId": commune["Id"],
             "IsVerificationJourManquantDesactivee": False,
@@ -554,8 +472,10 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     for i in range(1, profile.societes + 1):
         company_number = partition * profile.societes + i
         commune = tables["Referentiel.Communes"][(i * 7) % profile.communes]
-        siren = synthetic_siren(company_number, family=1)
-        company_name, legal_form = synthetic_staffing_identity(company_number)
+        company = company_record(company_number, from_end=True)
+        siren = company["siren"]
+        company_name = company["raison_sociale"]
+        legal_form = company["nature_juridique"]
         row = {
             "Id": stable_uuid(cfg.seed, "societe", i),
             "SIREN": siren,
@@ -569,7 +489,7 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "CodePostal": commune["CodePostal"],
             "Ville": commune["Description"],
             "PaysCode": "FR",
-            "CodeAPE": "7820Z",
+            "CodeAPE": company["code_ape"],
             **audit_columns(created),
             "FormeJuridiqueCode": legal_form,
             "IndicatifTelephone": "+33",
@@ -578,22 +498,26 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "Etat": 1,
             "CommuneId": commune["Id"],
         }
+        row["_siret_siege"] = company["siret_siege"]
+        row["_code_ape_reference"] = company["code_ape"]
         societes.append(row)
-        tables["Activite.Societes"].append(row)
+        tables["Activite.Societes"].append(
+            {key: value for key, value in row.items() if not key.startswith("_")}
+        )
 
     etablissement_count = max(profile.societes * 2, math.ceil(profile.agences / 2))
     etablissements: list[dict[str, Any]] = []
     for i in range(1, etablissement_count + 1):
-        establishment_number = partition * etablissement_count + i
         societe = societes[(i - 1) % len(societes)]
         commune = tables["Referentiel.Communes"][(i * 11) % profile.communes]
-        siret = synthetic_siret(societe["SIREN"], establishment_number)
+        is_headquarters = not any(row["SocieteId"] == societe["Id"] for row in etablissements)
+        siret = societe["_siret_siege"] if is_headquarters else None
         row = {
             "Id": stable_uuid(cfg.seed, "etablissement", i),
             "RaisonSociale": f"{societe['RaisonSociale']} - {commune['Description']}",
             "SocieteId": societe["Id"],
             "EstAlsaceMoselle": commune["CodeDepartement"] in {"57", "67", "68"},
-            "CodeAPE": "7820Z",
+            "CodeAPE": societe["_code_ape_reference"],
             "Telephone": f"010100{i:04d}",
             "Fax": None,
             "AdresseLigne1": f"{i + 3} boulevard des Analyses",
@@ -604,7 +528,7 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "DateDebutActivite": date(2018 + i % 6, 1, 1),
             "DateFinActivite": None,
             "Code": f"E{i:02d}",
-            "NIC": siret[-5:],
+            "NIC": siret[-5:] if siret else None,
             **audit_columns(created),
             "Etat": 1,
             "Nom": None,
@@ -670,14 +594,14 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     dep_by_est: dict[str, dict[str, Any]] = {}
     axis_by_est: dict[str, dict[str, Any]] = {}
     for i in range(1, profile.etablissements_clients + 1):
-        establishment_number = partition * profile.etablissements_clients + i
         client = client_meta[(i - 1) % len(client_meta)]
         commune = tables["Referentiel.Communes"][(i * 13) % profile.communes]
         est_id = stable_uuid(cfg.seed, "etablissement-client", i)
-        siret = synthetic_siret(client["siren"], establishment_number)
+        is_headquarters = not est_by_client[client["id"]]
+        siret = client["siret_siege"] if is_headquarters else None
         row = {
             "Id": est_id,
-            "CodeNIC": siret[-5:],
+            "CodeNIC": siret[-5:] if siret else None,
             "SIRET": siret,
             "RaisonSociale": f"{client['name']} - site {len(est_by_client[client['id']]) + 1}",
             "AdresseLigne1": f"{15 + i % 200} rue des Indicateurs",

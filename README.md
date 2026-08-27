@@ -6,7 +6,7 @@ Le profil `client`, utilisé par défaut, vise environ **3,2 millions de lignes 
 
 Benchmark vérifié avec la graine par défaut : **3 236 579 lignes métier**, **3 434 042 lignes au total**, 48 000 contrats et 820 Mio de CSV, générés en environ 2 min 30 sur la machine de développement. La durée dépend de la machine et du disque.
 
-> Aucune donnée personnelle réelle n’est utilisée. Les noms, coordonnées, entreprises, identifiants et opérations sont entièrement synthétiques. Les SIREN et SIRET ont un format français plausible et une clé Luhn valide, mais ne prouvent pas l’existence d’une entreprise réelle.
+> Le projet embarque un snapshot de **10 000 personnes morales réelles** issues du répertoire Sirene : SIREN, raison sociale, code APE, catégorie juridique et SIRET du siège. Les entrepreneurs individuels et les identités non diffusibles sont exclus. Les personnes, coordonnées, adresses opérationnelles et transactions restent entièrement synthétiques.
 
 ## Démarrage en 5 minutes
 
@@ -64,13 +64,16 @@ Le générateur conserve des motifs réalistes :
 
 - saisonnalité avec creux estival et reprise en septembre-octobre ;
 - concentration du chiffre d’affaires sur les clients stratégiques ;
-- une raison sociale et un SIREN uniques par client, y compris après concaténation des partitions ;
-- des SIRET d’établissements cohérents avec le SIREN de leur client ;
+- une raison sociale et un SIREN officiels, uniques par client, y compris après concaténation des partitions ;
+- le SIRET officiel du siège pour le premier établissement de chaque entreprise ;
+- aucun faux SIRET pour les sites supplémentaires synthétiques : le champ reste vide ;
 - corrélation entre heures, qualification, taux et montant facturé ;
 - absences, heures supplémentaires, factures non réglées et avoirs ;
 - quelques contacts manquants et libellés imparfaits, sans casser les clés.
 
 Le DDL transmis par Kevser est conservé sans modification dans [`schema/original/modele_ADV_script.sql`](schema/original/modele_ADV_script.sql). Le kit généré applique séparément les corrections de précision décimale nécessaires.
+
+Le snapshot officiel, sa provenance, sa licence et ses critères de filtrage sont documentés dans [`data/README.md`](data/README.md). Il peut être régénéré avec `scripts/refresh-sirene-reference.py`. Si une volumétrie demande plus d’identités uniques que le référentiel n’en contient, la génération échoue explicitement au lieu de recycler ou d’inventer des entreprises.
 
 ## Import dans SQL Server / SSMS
 
@@ -155,7 +158,7 @@ Chaque partition doit réussir les contrôles suivants avant d’être écrite :
 - rapprochement des montants de factures et relevés d’heures ;
 - cohérence des dates ;
 - plausibilité du taux d’impayés et des contacts manquants ;
-- format, clé de contrôle et unicité globale des SIREN et raisons sociales ;
+- format, clé de contrôle, unicité globale et correspondance au snapshot Sirene des identités d’entreprise ;
 - corrélation heures/chiffre d’affaires, concentration client et saisonnalité.
 
 Pour tester le projet :
@@ -171,6 +174,7 @@ src/kevser_date_gen/   moteur, orchestration et exports
 schema/original/       DDL original fourni par Kevser
 profiles/              profils documentés
 scripts/               installation, génération et import SQL Server
+data/                  snapshot Sirene et documentation de provenance
 tests/                 tests rapides et reproductibles
 docs/                  modèle, exploitation et dépannage
 generated/             sorties locales ignorées par Git
@@ -187,4 +191,4 @@ generated/             sorties locales ignorées par Git
 
 ## Licence
 
-Code publié sous licence MIT. Le schéma métier source reste fourni comme matériel de travail du projet.
+Code publié sous licence MIT. Le snapshot Sirene est réutilisé sous Licence Ouverte 2.0. Le schéma métier source reste fourni comme matériel de travail du projet.
