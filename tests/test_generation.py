@@ -8,12 +8,20 @@ import unittest
 from pathlib import Path
 
 from kevser_date_gen.config import DEFAULT_SHARDS
-from kevser_date_gen.engine import LOAD_ORDER
+from kevser_date_gen.engine import LOAD_ORDER, is_luhn_valid, synthetic_company_identity, synthetic_siren
 from kevser_date_gen.sqlserver import _bulk_loader_sql, _create_database_sql, _run_all_sql
 from kevser_date_gen.streaming import generate_bundle, resolve_shards
 
 
 class GenerationTests(unittest.TestCase):
+    def test_siren_helpers_match_luhn_and_cover_the_default_client_volume(self) -> None:
+        self.assertTrue(is_luhn_valid("732829320"))
+        self.assertFalse(is_luhn_valid("732829321"))
+        sirens = [synthetic_siren(number) for number in range(1, 3_601)]
+        names = [synthetic_company_identity(number)[0] for number in range(1, 3_601)]
+        self.assertEqual(len(set(sirens)), 3_600)
+        self.assertEqual(len(set(names)), 3_600)
+
     def test_default_profile_is_larger_than_ten_demo_partitions(self) -> None:
         self.assertGreaterEqual(DEFAULT_SHARDS["client"], 11)
         self.assertEqual(resolve_shards("client", 0.5), 6)
@@ -62,6 +70,34 @@ class GenerationTests(unittest.TestCase):
                 rows = list(csv.DictReader(handle, delimiter="|"))
             ids = [row["Id"] for row in rows]
             self.assertEqual(len(ids), len(set(ids)))
+
+    def test_company_identities_are_realistic_and_unique_across_partitions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "two"
+            report = generate_bundle(profile_name="smoke", shards=2, output=target, progress=lambda _: None)
+
+            def read_table(name: str) -> list[dict[str, str]]:
+                path = target / "csv" / f"{name}.csv"
+                with path.open(encoding="utf-8", newline="") as handle:
+                    return list(csv.DictReader(handle, delimiter="|"))
+
+            clients = read_table("Activite__Clients")
+            sirens = [row["SIREN"] for row in clients]
+            company_names = [row["RaisonSociale"] for row in clients]
+            self.assertEqual(len(sirens), 20)
+            self.assertEqual(len(set(sirens)), len(sirens))
+            self.assertEqual(len(set(company_names)), len(company_names))
+            self.assertTrue(all(len(siren) == 9 and is_luhn_valid(siren) for siren in sirens))
+
+            client_siren_by_id = {row["Id"]: row["SIREN"] for row in clients}
+            establishments = read_table("Activite__EtablissementsClient")
+            self.assertTrue(all(len(row["SIRET"]) == 14 and is_luhn_valid(row["SIRET"]) for row in establishments))
+            self.assertTrue(all(row["SIRET"].startswith(client_siren_by_id[row["ClientId"]]) for row in establishments))
+
+            self.assertTrue(report["company_identity_audit"]["passed"])
+            self.assertTrue(
+                report["company_identity_audit"]["tables"]["Activite.Clients"]["one_identity_per_row"]
+            )
 
     def test_sql_server_kit_is_safe_for_ssms_and_rowversion(self) -> None:
         create_database = _create_database_sql()
