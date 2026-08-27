@@ -6,7 +6,7 @@ Le profil `client`, utilisé par défaut, vise environ **3,2 millions de lignes 
 
 Benchmark vérifié avec la graine par défaut : **3 236 579 lignes métier**, **3 434 042 lignes au total**, 48 000 contrats et 820 Mio de CSV, générés en environ 2 min 30 sur la machine de développement. La durée dépend de la machine et du disque.
 
-> Aucune donnée personnelle réelle n’est utilisée. Les noms, coordonnées, entreprises, identifiants et opérations sont entièrement synthétiques.
+> Aucune donnée personnelle réelle n’est utilisée. Les noms, coordonnées, entreprises, identifiants et opérations sont entièrement synthétiques. Les SIREN et SIRET ont un format français plausible et une clé Luhn valide, mais ne prouvent pas l’existence d’une entreprise réelle.
 
 ## Démarrage en 5 minutes
 
@@ -64,6 +64,8 @@ Le générateur conserve des motifs réalistes :
 
 - saisonnalité avec creux estival et reprise en septembre-octobre ;
 - concentration du chiffre d’affaires sur les clients stratégiques ;
+- une raison sociale et un SIREN uniques par client, y compris après concaténation des partitions ;
+- des SIRET d’établissements cohérents avec le SIREN de leur client ;
 - corrélation entre heures, qualification, taux et montant facturé ;
 - absences, heures supplémentaires, factures non réglées et avoirs ;
 - quelques contacts manquants et libellés imparfaits, sans casser les clés.
@@ -153,6 +155,7 @@ Chaque partition doit réussir les contrôles suivants avant d’être écrite :
 - rapprochement des montants de factures et relevés d’heures ;
 - cohérence des dates ;
 - plausibilité du taux d’impayés et des contacts manquants ;
+- format, clé de contrôle et unicité globale des SIREN et raisons sociales ;
 - corrélation heures/chiffre d’affaires, concentration client et saisonnalité.
 
 Pour tester le projet :

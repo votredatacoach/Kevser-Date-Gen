@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from . import __version__
 from .config import DEFAULT_SHARDS, DatasetConfig, PROFILES
-from .engine import LOAD_ORDER, _csv_value, _ddl_column_types, build_dataset, run_audit
+from .engine import LOAD_ORDER, _csv_value, _ddl_column_types, build_dataset, is_luhn_valid, run_audit
 from .sqlserver import write_sql_server_kit
 
 
@@ -186,6 +186,32 @@ def _write_manifest(root: Path) -> dict[str, str]:
     return hashes
 
 
+def _audit_company_identities(csv_root: Path) -> dict[str, Any]:
+    """Contrôle les identités d'entreprise après concaténation des partitions."""
+    tables: dict[str, dict[str, Any]] = {}
+    for table in ("Activite__Clients", "Activite__Societes"):
+        path = csv_root / f"{table}.csv"
+        with path.open(encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle, delimiter="|"))
+        sirens = [row["SIREN"] for row in rows]
+        names = [row["RaisonSociale"].strip() for row in rows]
+        tables[table.replace("__", ".")] = {
+            "rows": len(rows),
+            "distinct_sirens": len(set(sirens)),
+            "distinct_company_names": len(set(names)),
+            "all_sirens_are_nine_digits": all(len(value) == 9 and value.isdigit() for value in sirens),
+            "all_sirens_pass_luhn": all(is_luhn_valid(value) for value in sirens),
+            "one_identity_per_row": len(set(sirens)) == len(rows) == len(set(names)),
+        }
+    passed = all(
+        item["all_sirens_are_nine_digits"]
+        and item["all_sirens_pass_luhn"]
+        and item["one_identity_per_row"]
+        for item in tables.values()
+    )
+    return {"passed": passed, "tables": tables}
+
+
 def generate_bundle(
     *,
     profile_name: str = "client",
@@ -219,7 +245,7 @@ def generate_bundle(
             shard_seed = seed + shard * 1_000_003
             cfg = DatasetConfig(seed=shard_seed)
             progress(f"Partition {shard + 1}/{shard_count} — seed {shard_seed}")
-            dataset = build_dataset(cfg, profile)
+            dataset = build_dataset(cfg, profile, partition=shard)
             audit = run_audit(dataset, cfg, profile)
             if not audit["passed"]:
                 failed = [name for name, item in audit["checks"].items() if not item["passed"]]
@@ -236,6 +262,10 @@ def generate_bundle(
             gc.collect()
             progress(f"Partition {shard + 1}/{shard_count} validée et écrite")
         writer.close()
+
+        company_identity_audit = _audit_company_identities(staging / "csv")
+        if not company_identity_audit["passed"]:
+            raise RuntimeError("Audit global en échec sur les SIREN ou les raisons sociales")
 
         business_rows = sum(writer.row_counts.get(name, 0) for name in BUSINESS_TABLES)
         baseline_10x = 2_704_380
@@ -274,6 +304,7 @@ def generate_bundle(
             "elapsed_seconds": elapsed,
             "default_minimum_10x_passed": minimum_check,
             "all_partition_audits_passed": True,
+            "company_identity_audit": company_identity_audit,
             "partition_reports": shard_reports,
             "privacy": "Toutes les identités et coordonnées sont synthétiques.",
         }
