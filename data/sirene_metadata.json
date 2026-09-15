@@ -1,0 +1,10 @@
+{
+  "snapshot_date": "2026-08-27",
+  "record_count": 10000,
+  "source_name": "Sirene - API Recherche d'entreprises",
+  "source_api": "https://recherche-entreprises.api.gouv.fr/near_point",
+  "license": "Licence Ouverte 2.0",
+  "csv_sha256": "ea5406f1cd009dc95e9bcf1d855f514de2c36d8ccd6c215e7fe87bfea96be309",
+  "csv_sha256_normalization": "line-endings-lf",
+  "criteria": "Unités légales actives et diffusibles, personnes morales privées 5xxx/6xxx, catégories PME et ETI, sièges actifs."
+}

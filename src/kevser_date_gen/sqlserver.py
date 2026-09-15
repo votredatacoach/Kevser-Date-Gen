@@ -95,8 +95,9 @@ def _bulk_loader_sql(
             cleaned = f"NULLIF(REPLACE([{column}], CHAR(13), N''), N'')"
             conversions.append(f"TRY_CONVERT({sql_type}, {cleaned})")
         select_values = ",\n    ".join(conversions)
+        expected_rows = row_counts.get(table, 0)
         lines.extend([
-            f"PRINT N'Chargement {table} — {row_counts.get(table, 0):,} lignes';",
+            f"PRINT N'Chargement {table} — {expected_rows:,} lignes';",
             f"DROP TABLE IF EXISTS {stage};",
             f"CREATE TABLE {stage} (\n    {stage_defs}\n);",
             f"BULK INSERT {stage}",
@@ -113,7 +114,10 @@ def _bulk_loader_sql(
             "SELECT",
             f"    {select_values}",
             f"FROM {stage};",
-            "IF @@ROWCOUNT = 0 THROW 51001, 'Aucune ligne importée : vérifiez DataRoot.', 1;",
+            (
+                f"IF @@ROWCOUNT <> {expected_rows} THROW 51001, "
+                f"'Nombre de lignes inattendu pour {table}.', 1;"
+            ),
             f"DROP TABLE {stage};",
             "GO",
             "",
@@ -121,32 +125,111 @@ def _bulk_loader_sql(
 
     lines.append("-- Fermeture des deux dépendances circulaires du modèle.")
     lines.extend(post_updates)
-    lines.extend(["GO", "", "-- Réactivation avec validation complète des contraintes."])
-    for table in reversed(LOAD_ORDER):
-        if table in columns:
-            sch, name = table.split(".", 1)
-            lines.append(f"ALTER TABLE [{sch}].[{name}] WITH CHECK CHECK CONSTRAINT ALL;")
-    lines.extend(["GO", "PRINT N'Import terminé et contraintes validées.';", "GO", ""])
+    lines.extend(
+        [
+            "GO",
+            "",
+            "-- Les index et la validation complète des contraintes sont exécutés",
+            "-- dans 04_indexes.sql, après le chargement massif.",
+            "PRINT N'Chargement terminé. Création des index et validation des contraintes à suivre.';",
+            "GO",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
 def _indexes_sql() -> str:
-    return """USE [$(DatabaseName)];
+    def create_index(
+        name: str,
+        table: str,
+        columns: str,
+        *,
+        include: str | None = None,
+    ) -> str:
+        include_clause = f"\n    INCLUDE ({include})" if include else ""
+        return (
+            "IF NOT EXISTS (SELECT 1 FROM sys.indexes "
+            f"WHERE object_id = OBJECT_ID(N'{table}') AND name = N'{name}')\n"
+            f"    CREATE INDEX [{name}]\n"
+            f"    ON {table} ({columns}){include_clause} WITH (MAXDOP = 1);"
+        )
+
+    index_statements = "\n".join(
+        (
+            create_index(
+                "IX_RelevesHeures_Contrat_DateDebut",
+                "[Activite].[RelevesHeures]",
+                "[ContratId], [DateDebut]",
+            ),
+            create_index(
+                "IX_LignesReleveHeures_Releve",
+                "[Activite].[LignesReleveHeures]",
+                "[ReleveHeuresId], [PartieSemaine]",
+            ),
+            create_index(
+                "IX_LignesReleveHeures_AxeAnalytique",
+                "[Activite].[LignesReleveHeures]",
+                "[AxeAnalytiqueId]",
+            ),
+            create_index(
+                "IX_LignesReleveHeures_LotFacture",
+                "[Activite].[LignesReleveHeures]",
+                "[LotFactureId]",
+            ),
+            create_index(
+                "IX_LignesReleveHeures_Rubrique",
+                "[Activite].[LignesReleveHeures]",
+                "[RubriqueId]",
+            ),
+            create_index(
+                "IX_MouvementsReleveHeures_Releve",
+                "[Activite].[MouvementsReleveHeures]",
+                "[ReleveHeuresId], [PartieSemaine]",
+            ),
+            create_index(
+                "IX_Factures_Client_DateEdition",
+                "[Activite].[Factures]",
+                "[ClientId], [DateEdition]",
+                include="[MontantHt], [IsReglee], [IsAvoir]",
+            ),
+            create_index(
+                "IX_LignesFacture_Facture",
+                "[Activite].[LignesFacture]",
+                "[FactureId]",
+                include="[MontantHT], [Base], [ContratId]",
+            ),
+            create_index(
+                "IX_LignesFacture_Contrat",
+                "[Activite].[LignesFacture]",
+                "[ContratId]",
+            ),
+            create_index(
+                "IX_LignesFacture_LigneRh",
+                "[Activite].[LignesFacture]",
+                "[LigneRhId]",
+            ),
+            create_index(
+                "IX_LignesFacture_Rubrique",
+                "[Activite].[LignesFacture]",
+                "[RubriqueId]",
+            ),
+        )
+    )
+    constraint_checks = "\n".join(
+        f"ALTER TABLE [{schema}].[{table}] WITH CHECK CHECK CONSTRAINT ALL;"
+        for schema, table in (name.split(".", 1) for name in reversed(LOAD_ORDER))
+    )
+    return f"""USE [$(DatabaseName)];
 GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_RelevesHeures_Contrat_DateDebut')
-    CREATE INDEX [IX_RelevesHeures_Contrat_DateDebut]
-    ON [Activite].[RelevesHeures] ([ContratId], [DateDebut]);
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LignesReleveHeures_Releve')
-    CREATE INDEX [IX_LignesReleveHeures_Releve]
-    ON [Activite].[LignesReleveHeures] ([ReleveHeuresId], [PartieSemaine]);
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Factures_Client_DateEdition')
-    CREATE INDEX [IX_Factures_Client_DateEdition]
-    ON [Activite].[Factures] ([ClientId], [DateEdition])
-    INCLUDE ([MontantHt], [IsReglee], [IsAvoir]);
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_LignesFacture_Facture')
-    CREATE INDEX [IX_LignesFacture_Facture]
-    ON [Activite].[LignesFacture] ([FactureId])
-    INCLUDE ([MontantHT], [Base], [ContratId]);
+SET NOCOUNT ON;
+{index_statements}
+GO
+
+-- Les index de jointure existent avant la validation des FK volumineuses.
+{constraint_checks}
+GO
+PRINT N'Index créés et contraintes réactivées avec validation complète.';
 GO
 """
 

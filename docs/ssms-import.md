@@ -15,12 +15,14 @@ Les scripts se trouvent dans le dossier `sql/` de chaque génération. Pour un i
 
 `99_run_all.sql` définit `DatabaseName` et `DataRoot`, puis appelle les six scripts dans cet ordre. `DataRoot` désigne le dossier qui contient `csv/`. Les scripts numérotés n’imposent aucune valeur par défaut, afin que les paramètres `sqlcmd -v` du script PowerShell ne soient jamais écrasés.
 
+Le lanceur PowerShell vérifie d’abord les empreintes de tous les fichiers déclarés dans `manifest.sha256`. En cas de fichier absent ou modifié, il annule l’import avant toute création ou modification de base SQL Server.
+
 ## Permissions de fichiers
 
 `BULK INSERT` lit les CSV depuis le processus SQL Server, pas depuis SSMS. Pour une instance locale, accordez au compte du service SQL Server un droit de lecture sur le dossier. Pour une instance distante, copiez les fichiers sur le serveur ou utilisez un partage UNC autorisé.
 
 ## Stratégie de chargement
 
-Les CSV sont d’abord chargés dans des tables temporaires en texte UTF-8, puis convertis vers les types du DDL avec `TRY_CONVERT`. Les contraintes sont suspendues pendant l’import, réactivées avec `WITH CHECK`, puis les index analytiques sont ajoutés.
+Les CSV sont d’abord chargés dans des tables temporaires en texte UTF-8, puis convertis vers les types du DDL avec `TRY_CONVERT`. Les contraintes sont suspendues pendant l’import. Les index de jointure sont ensuite créés, puis toutes les contraintes sont réactivées avec `WITH CHECK`. Cet ordre réduit la mémoire nécessaire au contrôle des tables les plus volumineuses.
 
 Si une conversion renvoie `NULL` pour une colonne obligatoire, l’insertion échoue et `sqlcmd -b` retourne un code d’erreur.
