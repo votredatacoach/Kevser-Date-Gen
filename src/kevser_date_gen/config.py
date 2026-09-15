@@ -23,10 +23,10 @@ class VolumeProfile:
 
 
 PROFILES: dict[str, VolumeProfile] = {
-    "smoke": VolumeProfile("smoke", 12, 2, 1, 10, 14, 35, 50, 2, 2, 6),
-    "demo": VolumeProfile("demo", 80, 8, 2, 300, 450, 2_000, 4_000, 12, 4, 22),
+    "smoke": VolumeProfile("smoke", 12, 2, 2, 10, 14, 35, 50, 2, 2, 6),
+    "demo": VolumeProfile("demo", 80, 8, 8, 300, 450, 2_000, 4_000, 12, 4, 22),
     # Le profil client est généré par défaut en 12 partitions de cette taille.
-    "client": VolumeProfile("client", 80, 8, 2, 300, 450, 2_000, 4_000, 12, 4, 22),
+    "client": VolumeProfile("client", 80, 8, 8, 300, 450, 2_000, 4_000, 12, 4, 22),
 }
 
 DEFAULT_SHARDS = {"smoke": 1, "demo": 1, "client": 12}

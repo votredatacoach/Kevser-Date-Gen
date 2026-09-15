@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -59,6 +61,12 @@ FIELDNAMES = (
 )
 
 
+def canonical_csv_sha256(path: Path) -> str:
+    """Calcule une empreinte stable malgré la conversion Git CRLF/LF."""
+    canonical_bytes = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=10_000)
@@ -67,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=Path(__file__).resolve().parents[1] / "data" / "sirene_companies.csv",
+    )
+    parser.add_argument(
+        "--metadata-output",
+        type=Path,
+        help="Fichier JSON de métadonnées (par défaut à côté du CSV).",
     )
     return parser.parse_args()
 
@@ -87,7 +100,7 @@ def fetch_page(area: tuple[str, float, float], page: int, *, retries: int = 5) -
     )
     request = Request(
         f"{API_URL}?{query}",
-        headers={"Accept": "application/json", "User-Agent": "Kevser-Date-Gen/1.2 reference-refresh"},
+        headers={"Accept": "application/json", "User-Agent": "Kevser-Date-Gen reference-refresh"},
     )
     for attempt in range(retries):
         try:
@@ -189,7 +202,26 @@ def main() -> int:
         writer = csv.DictWriter(handle, fieldnames=FIELDNAMES)
         writer.writeheader()
         writer.writerows(records)
+    metadata_output = args.metadata_output or args.output.with_name("sirene_metadata.json")
+    metadata = {
+        "snapshot_date": date.today().isoformat(),
+        "record_count": len(records),
+        "source_name": "Sirene - API Recherche d'entreprises",
+        "source_api": API_URL,
+        "license": "Licence Ouverte 2.0",
+        "csv_sha256": canonical_csv_sha256(args.output),
+        "csv_sha256_normalization": "line-endings-lf",
+        "criteria": (
+            "Unités légales actives et diffusibles, personnes morales privées 5xxx/6xxx, "
+            "catégories PME et ETI, sièges actifs."
+        ),
+    }
+    metadata_output.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     print(f"Référentiel écrit : {args.output} ({len(records):,} entreprises)")
+    print(f"Métadonnées écrites : {metadata_output}")
     return 0
 
 

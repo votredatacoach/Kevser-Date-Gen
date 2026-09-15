@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import DOCS_DIR, GENERATED_DIR, PROJECT_DIR, SOURCE_DDL, DatasetConfig, VolumeProfile
-from .company_reference import company_record, load_company_reference
+from .company_reference import (
+    company_record,
+    company_reference_metadata,
+    load_company_reference,
+)
 
 
 NAMESPACE = uuid.UUID("51e8f071-1793-4afb-bf2e-bb89afcd6c11")
@@ -169,6 +173,8 @@ CITIES = (
     "Angers", "Nîmes", "Clermont-Ferrand", "Tours", "Metz", "Besançon",
     "Orléans", "Mulhouse", "Caen", "Nancy", "Poitiers", "Annecy",
 )
+
+
 def stable_uuid(seed: int, entity: str, number: int | str) -> str:
     return str(uuid.uuid5(NAMESPACE, f"{seed}|{entity}|{number}"))
 
@@ -176,6 +182,38 @@ def stable_uuid(seed: int, entity: str, number: int | str) -> str:
 def stable_rng(seed: int, label: str) -> random.Random:
     digest = hashlib.sha256(f"{seed}|{label}".encode("utf-8")).digest()
     return random.Random(int.from_bytes(digest[:8], "big"))
+
+
+def compact_code(prefix: str, number: int, *, width: int = 2) -> str:
+    """Encode un ordinal global en base 36 dans une colonne de code courte."""
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if number < 1 or number >= len(alphabet) ** width:
+        raise ValueError(
+            f"Impossible d'encoder le numéro {number} avec le préfixe {prefix!r} "
+            f"sur {width} caractère(s)."
+        )
+    digits: list[str] = []
+    value = number
+    for _ in range(width):
+        value, remainder = divmod(value, len(alphabet))
+        digits.append(alphabet[remainder])
+    return prefix + "".join(reversed(digits))
+
+
+def fit_label(value: str, suffix: str, *, maximum: int) -> str:
+    """Ajoute un suffixe métier sans dépasser la taille du DDL."""
+    if len(suffix) > maximum:
+        raise ValueError("Le suffixe dépasse la taille maximale de la colonne")
+    available = maximum - len(suffix)
+    return value[:available].rstrip(" ,.-") + suffix
+
+
+def french_vat_code(siren: str) -> str:
+    """Calcule le format de TVA français dérivé du SIREN, sans prouver son activité."""
+    if len(siren) != 9 or not siren.isdigit():
+        raise ValueError(f"SIREN invalide pour le calcul TVA : {siren!r}")
+    key = (12 + 3 * (int(siren) % 97)) % 97
+    return f"FR{key:02d}{siren}"
 
 
 def money(value: float | Decimal) -> Decimal:
@@ -240,15 +278,32 @@ def _split_hours(total: Decimal) -> tuple[Decimal, ...]:
     return tuple(money(v) for v in (*base, friday, 0, 0))
 
 
-def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int = 0) -> dict[str, Any]:
+def build_dataset(
+    cfg: DatasetConfig,
+    profile: VolumeProfile,
+    *,
+    partition: int = 0,
+    reserved_client_identities: int | None = None,
+) -> dict[str, Any]:
     rng = stable_rng(cfg.seed, f"build-{profile.name}")
     reference_size = len(load_company_reference())
+    snapshot_date = company_reference_metadata()["snapshot_date"]
+    reserved_clients = (
+        reserved_client_identities
+        if reserved_client_identities is not None
+        else profile.clients * (partition + 1)
+    )
     requested_clients = (partition + 1) * profile.clients
     requested_societes = (partition + 1) * profile.societes
-    if requested_clients + requested_societes > reference_size:
+    if reserved_clients < requested_clients:
+        raise ValueError(
+            "La réserve d'identités clients est inférieure au nombre déjà demandé : "
+            f"{reserved_clients} < {requested_clients}."
+        )
+    if reserved_clients + requested_societes > reference_size:
         raise ValueError(
             "Le référentiel Sirene embarqué ne permet pas de garantir des identités "
-            f"distinctes : {requested_clients} clients + {requested_societes} sociétés "
+            f"distinctes : {reserved_clients} clients réservés + {requested_societes} sociétés "
             f"demandés pour {reference_size} entreprises disponibles."
         )
     created = date(2026, 7, 17)
@@ -459,7 +514,9 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "ParametrageSpecificitesId": None,
             "NoteEllipro": {"STRAT": 5, "ETI": 4, "PME": 3}[tier],
             "IsNoteElliproReadOnly": False,
-            "CommentaireSiren": "Identité publique issue du snapshot Sirene du 2026-08-27",
+            "CommentaireSiren": (
+                f"Identité publique issue du snapshot Sirene du {snapshot_date}"
+            ),
             "CedexId": None,
             "CommuneId": commune["Id"],
             "IsVerificationJourManquantDesactivee": False,
@@ -472,7 +529,11 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     for i in range(1, profile.societes + 1):
         company_number = partition * profile.societes + i
         commune = tables["Referentiel.Communes"][(i * 7) % profile.communes]
-        company = company_record(company_number, from_end=True)
+        company = company_record(
+            company_number,
+            from_end=True,
+            exclude_first=reserved_clients,
+        )
         siren = company["siren"]
         company_name = company["raison_sociale"]
         legal_form = company["nature_juridique"]
@@ -480,9 +541,9 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "Id": stable_uuid(cfg.seed, "societe", i),
             "SIREN": siren,
             "RaisonSociale": company_name,
-            "Code": f"S{i:02d}",
+            "Code": compact_code("S", company_number),
             "Capital": money(1_000_000 + i * 250_000),
-            "CodeTvaCee": f"FR{(12 + 3 * (int(siren) % 97)) % 97:02d}{siren}",
+            "CodeTvaCee": french_vat_code(siren),
             "Telephone": f"010000{i:04d}",
             "Fax": None,
             "AdresseLigne1": f"{20 + i} avenue du Modèle",
@@ -508,13 +569,22 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     etablissement_count = max(profile.societes * 2, math.ceil(profile.agences / 2))
     etablissements: list[dict[str, Any]] = []
     for i in range(1, etablissement_count + 1):
+        establishment_number = partition * etablissement_count + i
         societe = societes[(i - 1) % len(societes)]
         commune = tables["Referentiel.Communes"][(i * 11) % profile.communes]
         is_headquarters = not any(row["SocieteId"] == societe["Id"] for row in etablissements)
         siret = societe["_siret_siege"] if is_headquarters else None
         row = {
             "Id": stable_uuid(cfg.seed, "etablissement", i),
-            "RaisonSociale": f"{societe['RaisonSociale']} - {commune['Description']}",
+            "RaisonSociale": (
+                societe["RaisonSociale"]
+                if is_headquarters
+                else fit_label(
+                    societe["RaisonSociale"],
+                    f" - {commune['Description']}",
+                    maximum=150,
+                )
+            ),
             "SocieteId": societe["Id"],
             "EstAlsaceMoselle": commune["CodeDepartement"] in {"57", "67", "68"},
             "CodeAPE": societe["_code_ape_reference"],
@@ -527,7 +597,7 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "PseudoSIRET": siret,
             "DateDebutActivite": date(2018 + i % 6, 1, 1),
             "DateFinActivite": None,
-            "Code": f"E{i:02d}",
+            "Code": compact_code("E", establishment_number),
             "NIC": siret[-5:] if siret else None,
             **audit_columns(created),
             "Etat": 1,
@@ -545,15 +615,16 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     agencies: list[dict[str, Any]] = []
     dossiers: list[dict[str, Any]] = []
     for i in range(1, profile.agences + 1):
+        agency_number = partition * profile.agences + i
         agency_id = stable_uuid(cfg.seed, "agence", i)
         dossier_id = stable_uuid(cfg.seed, "dossier", i)
         city = CITIES[(i * 3) % len(CITIES)]
         agency = {
             "Id": agency_id,
-            "Nom": f"Agence {city} {i:02d}",
-            "Code": f"A{i:02d}",
+            "Nom": f"Agence {city} {agency_number:03d}",
+            "Code": compact_code("A", agency_number),
             **audit_columns(created),
-            "Mail": f"agence{i:02d}@synthese.example.invalid",
+            "Mail": f"agence{agency_number:03d}@synthese.example.invalid",
             "IndicatifTelephone": "+33",
             "Telephone": f"010200{i:04d}",
             "IndicatifFax": None,
@@ -566,8 +637,8 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
         }
         dossier = {
             "Id": dossier_id,
-            "Code": f"D{i:04d}",
-            "Nom": f"Dossier principal {city}",
+            "Code": f"D{agency_number:04d}",
+            "Nom": f"Dossier principal {city} {agency_number:03d}",
             "AgenceId": agency_id,
             "EtablissementId": etablissements[(i - 1) % len(etablissements)]["Id"],
             "IsProduction": True,
@@ -593,7 +664,9 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
     est_by_client: dict[str, list[dict[str, Any]]] = defaultdict(list)
     dep_by_est: dict[str, dict[str, Any]] = {}
     axis_by_est: dict[str, dict[str, Any]] = {}
+    client_dossier_pairs: set[tuple[str, str]] = set()
     for i in range(1, profile.etablissements_clients + 1):
+        client_establishment_number = partition * profile.etablissements_clients + i
         client = client_meta[(i - 1) % len(client_meta)]
         commune = tables["Referentiel.Communes"][(i * 13) % profile.communes]
         est_id = stable_uuid(cfg.seed, "etablissement-client", i)
@@ -603,7 +676,15 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "Id": est_id,
             "CodeNIC": siret[-5:] if siret else None,
             "SIRET": siret,
-            "RaisonSociale": f"{client['name']} - site {len(est_by_client[client['id']]) + 1}",
+            "RaisonSociale": (
+                client["name"]
+                if is_headquarters
+                else fit_label(
+                    client["name"],
+                    f" - site {len(est_by_client[client['id']]) + 1}",
+                    maximum=100,
+                )
+            ),
             "AdresseLigne1": f"{15 + i % 200} rue des Indicateurs",
             "CodePostal": commune["CodePostal"],
             "Ville": commune["Description"],
@@ -650,10 +731,11 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
             "ParametrageSpecificitesId": None,
             "PublicId": stable_uuid(cfg.seed, "public-etab-client", i),
         })
+        client_dossier_pairs.add((est_id, dossier["Id"]))
 
         axis = {
             "Id": stable_uuid(cfg.seed, "axe", i),
-            "Code": f"AXE{i:05d}",
+            "Code": f"AXE{client_establishment_number:05d}",
             "FamilleCode": "CENTRECOUT",
             "Valeur": department["Libelle"],
             **audit_columns(created),
@@ -753,6 +835,27 @@ def build_dataset(cfg: DatasetConfig, profile: VolumeProfile, *, partition: int 
         agency_index = rng.randrange(len(agencies))
         agency = agencies[agency_index]
         dossier = dossiers[agency_index]
+        pair = (establishment["id"], dossier["Id"])
+        if pair not in client_dossier_pairs:
+            link_number = len(
+                tables["Activite.EtablissementsClientDossiersAgence"]
+            ) + 1
+            tables["Activite.EtablissementsClientDossiersAgence"].append(
+                {
+                    "EtablissementClientId": establishment["id"],
+                    "DossierAgenceId": dossier["Id"],
+                    "Matricule": 500000 + link_number,
+                    **audit_columns(created),
+                    "ParametrageFacturationId": None,
+                    "ParametrageSpecificitesId": None,
+                    "PublicId": stable_uuid(
+                        cfg.seed,
+                        "public-etab-client-dossier",
+                        f"{establishment['id']}|{dossier['Id']}",
+                    ),
+                }
+            )
+            client_dossier_pairs.add(pair)
         interim = interimaires[(i * 17 + rng.randrange(len(interimaires))) % len(interimaires)]
         qualification_code = rng.choice(tuple(qualification_meta))
         qual = qualification_meta[qualification_code]
@@ -1436,6 +1539,14 @@ def _validation_sql() -> str:
     return """USE [Adventure];
 GO
 
+SET NOCOUNT ON;
+
+DECLARE @ControlesIdentite TABLE (
+    [Controle] nvarchar(120) NOT NULL PRIMARY KEY,
+    [NbAnomalies] bigint NOT NULL,
+    [Attendu] nvarchar(240) NOT NULL
+);
+
 -- Volumes des tables analytiques principales
 SELECT 'ContratsModelesPoste' AS TableName, COUNT_BIG(*) AS NbLignes FROM [Activite].[ContratsModelesPoste]
 UNION ALL SELECT 'RelevesHeures', COUNT_BIG(*) FROM [Activite].[RelevesHeures]
@@ -1449,6 +1560,13 @@ FROM [Activite].[LignesFacture] lf
 LEFT JOIN [Activite].[Factures] f ON f.Id = lf.FactureId
 WHERE f.Id IS NULL;
 
+INSERT INTO @ControlesIdentite
+SELECT N'LignesFacture_Facture_orphelines', COUNT_BIG(*),
+       N'0 ligne de facture sans facture parente'
+FROM [Activite].[LignesFacture] AS lf
+LEFT JOIN [Activite].[Factures] AS f ON f.[Id] = lf.[FactureId]
+WHERE f.[Id] IS NULL;
+
 -- Réconciliation facture / lignes (doit retourner 0 ligne)
 SELECT f.Id, f.NumeroComplet, f.NetAFacturer, SUM(lf.MontantHT) AS SommeLignes
 FROM [Activite].[Factures] f
@@ -1456,11 +1574,369 @@ JOIN [Activite].[LignesFacture] lf ON lf.FactureId = f.Id
 GROUP BY f.Id, f.NumeroComplet, f.NetAFacturer
 HAVING ABS(f.NetAFacturer - SUM(lf.MontantHT)) > 0.02;
 
+INSERT INTO @ControlesIdentite
+SELECT N'Factures_rapprochement_lignes', COUNT_BIG(*),
+       N'0 facture vide ou ecart de montant superieur a 0,02'
+FROM (
+    SELECT f.[Id]
+    FROM [Activite].[Factures] AS f
+    LEFT JOIN [Activite].[LignesFacture] AS lf ON lf.[FactureId] = f.[Id]
+    GROUP BY f.[Id], f.[NetAFacturer]
+    HAVING f.[NetAFacturer] IS NULL
+       OR COUNT(lf.[Id]) = 0
+       OR COUNT(lf.[MontantHT]) <> COUNT(lf.[Id])
+       OR ABS(f.[NetAFacturer] - COALESCE(SUM(lf.[MontantHT]), 0)) > 0.02
+) AS factures_invalides;
+
 -- Factures impayées et délais de règlement
 SELECT
     CAST(100.0 * AVG(CASE WHEN IsReglee = 0 AND IsAvoir = 0 THEN 1.0 ELSE 0.0 END) AS decimal(6,2)) AS TauxImpayesPct,
     AVG(CASE WHEN DateReglement IS NOT NULL THEN DATEDIFF(day, DateEdition, DateReglement) * 1.0 END) AS DelaiMoyenJours
 FROM [Activite].[Factures];
+
+-- Identites legales et lignages -----------------------------------------
+-- Les SIREN/SIRET de reference proviennent du snapshot Sirene livre avec
+-- le generateur. Ce script ne recontacte pas l'Insee : il controle leur
+-- format et leur coherence apres l'import SQL Server.
+-- SIREN : format strict et absence de doublon au sein de chaque population.
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_SIREN_format', COUNT_BIG(*), N'9 chiffres, sans espace'
+FROM [Activite].[Clients]
+WHERE [SIREN] IS NULL
+   OR DATALENGTH([SIREN]) <> 18
+   OR [SIREN] COLLATE Latin1_General_100_BIN2 LIKE N'%[^0-9]%';
+
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_SIREN_doublons', COUNT_BIG(*), N'0 groupe de SIREN duplique'
+FROM (
+    SELECT [SIREN]
+    FROM [Activite].[Clients]
+    WHERE NULLIF(LTRIM(RTRIM([SIREN])), N'') IS NOT NULL
+    GROUP BY [SIREN]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_SIREN_format', COUNT_BIG(*), N'9 chiffres, sans espace'
+FROM [Activite].[Societes]
+WHERE [SIREN] IS NULL
+   OR DATALENGTH([SIREN]) <> 18
+   OR [SIREN] COLLATE Latin1_General_100_BIN2 LIKE N'%[^0-9]%';
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_SIREN_doublons', COUNT_BIG(*), N'0 groupe de SIREN duplique'
+FROM (
+    SELECT [SIREN]
+    FROM [Activite].[Societes]
+    WHERE NULLIF(LTRIM(RTRIM([SIREN])), N'') IS NOT NULL
+    GROUP BY [SIREN]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+-- Codes metier : renseignes et uniques dans leur propre table.
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_Code_vide', COUNT_BIG(*), N'0 code vide'
+FROM [Activite].[Societes]
+WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NULL;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_Code_doublons', COUNT_BIG(*), N'0 groupe de code duplique'
+FROM (
+    SELECT [Code]
+    FROM [Activite].[Societes]
+    WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NOT NULL
+    GROUP BY [Code]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Agences_Code_vide', COUNT_BIG(*), N'0 code vide'
+FROM [Activite].[Agences]
+WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NULL;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Agences_Code_doublons', COUNT_BIG(*), N'0 groupe de code duplique'
+FROM (
+    SELECT [Code]
+    FROM [Activite].[Agences]
+    WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NOT NULL
+    GROUP BY [Code]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+INSERT INTO @ControlesIdentite
+SELECT N'DossiersAgence_Code_vide', COUNT_BIG(*), N'0 code vide'
+FROM [Activite].[DossiersAgence]
+WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NULL;
+
+INSERT INTO @ControlesIdentite
+SELECT N'DossiersAgence_Code_doublons', COUNT_BIG(*), N'0 groupe de code duplique'
+FROM (
+    SELECT [Code]
+    FROM [Activite].[DossiersAgence]
+    WHERE NULLIF(LTRIM(RTRIM([Code])), N'') IS NOT NULL
+    GROUP BY [Code]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+-- Etablissements des societes : un seul SIRET de reference par societe.
+-- Les autres sites sont synthetiques et conservent donc PseudoSIRET/NIC vides.
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_un_SIRET_reference', COUNT_BIG(*), N'1 SIRET renseigne par societe'
+FROM (
+    SELECT s.[Id]
+    FROM [Activite].[Societes] AS s
+    LEFT JOIN [Activite].[Etablissements] AS e ON e.[SocieteId] = s.[Id]
+    GROUP BY s.[Id]
+    HAVING SUM(CASE
+        WHEN NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NOT NULL THEN 1
+        ELSE 0
+    END) <> 1
+) AS parents_invalides;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_SIRET_structure', COUNT_BIG(*), N'14 chiffres = SIREN + NIC'
+FROM [Activite].[Etablissements] AS e
+JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+WHERE NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NOT NULL
+  AND (
+      DATALENGTH(e.[PseudoSIRET]) <> 28
+      OR e.[PseudoSIRET] COLLATE Latin1_General_100_BIN2 LIKE N'%[^0-9]%'
+      OR LEFT(e.[PseudoSIRET], 9) <> s.[SIREN]
+      OR NULLIF(LTRIM(RTRIM(e.[NIC])), N'') IS NULL
+      OR e.[NIC] <> RIGHT(e.[PseudoSIRET], 5)
+  );
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_SIRET_doublons', COUNT_BIG(*), N'0 groupe de SIRET duplique'
+FROM (
+    SELECT e.[PseudoSIRET]
+    FROM [Activite].[Etablissements] AS e
+    WHERE NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NOT NULL
+    GROUP BY e.[PseudoSIRET]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_siege_nom_officiel', COUNT_BIG(*),
+       N'Raison sociale du siege identique a celle de la societe'
+FROM [Activite].[Etablissements] AS e
+JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+WHERE NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NOT NULL
+  AND ISNULL(e.[RaisonSociale], N'') <> ISNULL(s.[RaisonSociale], N'');
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_etablissement_principal', COUNT_BIG(*),
+       N'Le principal appartient a la societe et porte le SIRET de reference'
+FROM [Activite].[Societes] AS s
+LEFT JOIN [Activite].[Etablissements] AS e
+    ON e.[Id] = s.[EtablissementPrincipalId]
+WHERE e.[Id] IS NULL
+   OR e.[SocieteId] IS NULL
+   OR e.[SocieteId] <> s.[Id]
+   OR NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NULL;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_sites_synthetiques_sans_SIRET', COUNT_BIG(*),
+       N'PseudoSIRET et NIC vides hors etablissement principal'
+FROM [Activite].[Etablissements] AS e
+JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+WHERE e.[Id] <> s.[EtablissementPrincipalId]
+  AND (
+      NULLIF(LTRIM(RTRIM(e.[PseudoSIRET])), N'') IS NOT NULL
+      OR NULLIF(LTRIM(RTRIM(e.[NIC])), N'') IS NOT NULL
+  );
+
+INSERT INTO @ControlesIdentite
+SELECT N'Societes_CodeAPE_etablissement', COUNT_BIG(*), N'Code APE identique au parent'
+FROM [Activite].[Etablissements] AS e
+JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+WHERE ISNULL(NULLIF(LTRIM(RTRIM(e.[CodeAPE])), N''), N'')
+   <> ISNULL(NULLIF(LTRIM(RTRIM(s.[CodeAPE])), N''), N'');
+
+-- Etablissements clients : un seul SIRET de reference par client.
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_un_SIRET_reference', COUNT_BIG(*), N'1 SIRET renseigne par client'
+FROM (
+    SELECT c.[Id]
+    FROM [Activite].[Clients] AS c
+    LEFT JOIN [Activite].[EtablissementsClient] AS ec ON ec.[ClientId] = c.[Id]
+    GROUP BY c.[Id]
+    HAVING SUM(CASE
+        WHEN NULLIF(LTRIM(RTRIM(ec.[SIRET])), N'') IS NOT NULL THEN 1
+        ELSE 0
+    END) <> 1
+) AS parents_invalides;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_SIRET_structure', COUNT_BIG(*), N'14 chiffres = SIREN + CodeNIC'
+FROM [Activite].[EtablissementsClient] AS ec
+JOIN [Activite].[Clients] AS c ON c.[Id] = ec.[ClientId]
+WHERE NULLIF(LTRIM(RTRIM(ec.[SIRET])), N'') IS NOT NULL
+  AND (
+      DATALENGTH(ec.[SIRET]) <> 28
+      OR ec.[SIRET] COLLATE Latin1_General_100_BIN2 LIKE N'%[^0-9]%'
+      OR LEFT(ec.[SIRET], 9) <> c.[SIREN]
+      OR NULLIF(LTRIM(RTRIM(ec.[CodeNIC])), N'') IS NULL
+      OR ec.[CodeNIC] <> RIGHT(ec.[SIRET], 5)
+  );
+
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_SIRET_doublons', COUNT_BIG(*), N'0 groupe de SIRET duplique'
+FROM (
+    SELECT ec.[SIRET]
+    FROM [Activite].[EtablissementsClient] AS ec
+    WHERE NULLIF(LTRIM(RTRIM(ec.[SIRET])), N'') IS NOT NULL
+    GROUP BY ec.[SIRET]
+    HAVING COUNT_BIG(*) > 1
+) AS doublons;
+
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_siege_nom_officiel', COUNT_BIG(*),
+       N'Raison sociale du siege identique a celle du client'
+FROM [Activite].[EtablissementsClient] AS ec
+JOIN [Activite].[Clients] AS c ON c.[Id] = ec.[ClientId]
+WHERE NULLIF(LTRIM(RTRIM(ec.[SIRET])), N'') IS NOT NULL
+  AND ISNULL(ec.[RaisonSociale], N'') <> ISNULL(c.[RaisonSociale], N'');
+
+INSERT INTO @ControlesIdentite
+SELECT N'Clients_sites_synthetiques_sans_NIC', COUNT_BIG(*),
+       N'CodeNIC vide lorsque le SIRET est vide'
+FROM [Activite].[EtablissementsClient] AS ec
+WHERE NULLIF(LTRIM(RTRIM(ec.[SIRET])), N'') IS NULL
+  AND NULLIF(LTRIM(RTRIM(ec.[CodeNIC])), N'') IS NOT NULL;
+
+-- Lignage Agence -> Dossier -> Etablissement -> Societe.
+INSERT INTO @ControlesIdentite
+SELECT N'Agences_dossier_principal', COUNT_BIG(*),
+       N'Le dossier principal existe et appartient a la meme agence'
+FROM [Activite].[Agences] AS a
+LEFT JOIN [Activite].[DossiersAgence] AS d ON d.[Id] = a.[DossierAgencePrincipalId]
+WHERE d.[Id] IS NULL OR d.[AgenceId] IS NULL OR d.[AgenceId] <> a.[Id];
+
+INSERT INTO @ControlesIdentite
+SELECT N'DossiersAgence_lignage_societe', COUNT_BIG(*),
+       N'Agence et Etablissement/Societe parents valides'
+FROM [Activite].[DossiersAgence] AS d
+LEFT JOIN [Activite].[Agences] AS a ON a.[Id] = d.[AgenceId]
+LEFT JOIN [Activite].[Etablissements] AS e ON e.[Id] = d.[EtablissementId]
+LEFT JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+WHERE a.[Id] IS NULL OR e.[Id] IS NULL OR s.[Id] IS NULL;
+
+INSERT INTO @ControlesIdentite
+SELECT N'EtablissementsClient_dossier_absent', COUNT_BIG(*),
+       N'Au moins un dossier agence valide par etablissement client'
+FROM [Activite].[EtablissementsClient] AS ec
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM [Activite].[EtablissementsClientDossiersAgence] AS lien
+    JOIN [Activite].[DossiersAgence] AS d ON d.[Id] = lien.[DossierAgenceId]
+    WHERE lien.[EtablissementClientId] = ec.[Id]
+);
+
+INSERT INTO @ControlesIdentite
+SELECT N'AxesAnalytiques_lignage_client', COUNT_BIG(*),
+       N'Client et etablissement client concordants'
+FROM [Activite].[AxesAnalytiques] AS axe
+LEFT JOIN [Activite].[EtablissementsClient] AS ec
+    ON ec.[Id] = axe.[EtablissementClientId]
+WHERE ec.[Id] IS NULL
+   OR axe.[ClientId] IS NULL
+   OR ec.[ClientId] IS NULL
+   OR ec.[ClientId] <> axe.[ClientId];
+
+INSERT INTO @ControlesIdentite
+SELECT N'LignesReleveHeures_lignage_releve', COUNT_BIG(*),
+       N'Releve et partie de semaine parents valides'
+FROM [Activite].[LignesReleveHeures] AS ligne
+LEFT JOIN [Activite].[RelevesHeures] AS releve
+    ON releve.[Id] = ligne.[ReleveHeuresId]
+   AND releve.[PartieSemaine] = ligne.[PartieSemaine]
+WHERE releve.[Id] IS NULL;
+
+-- Chemin complet des contrats : le site client, son dossier, son agence et
+-- son département doivent tous décrire le même rattachement métier.
+INSERT INTO @ControlesIdentite
+SELECT N'Contrats_lignage_complet', COUNT_BIG(*),
+       N'Client/site/departement et agence/dossier concordants'
+FROM [Activite].[ContratsModelesPoste] AS contrat
+LEFT JOIN [Activite].[Clients] AS c ON c.[Id] = contrat.[ClientIdModelePoste]
+LEFT JOIN [Activite].[EtablissementsClient] AS ec
+    ON ec.[Id] = contrat.[EtablissementClientId]
+LEFT JOIN [Activite].[DepartementsEtablissementsClients] AS dep
+    ON dep.[Id] = contrat.[DepartementEtablissementClientId]
+LEFT JOIN [Activite].[DossiersAgence] AS d ON d.[Id] = contrat.[DossierAgenceId]
+WHERE c.[Id] IS NULL
+   OR ec.[Id] IS NULL
+   OR ec.[ClientId] IS NULL
+   OR ec.[ClientId] <> contrat.[ClientIdModelePoste]
+   OR contrat.[EtablissementClientIdModelePoste] IS NULL
+   OR contrat.[EtablissementClientIdModelePoste] <> contrat.[EtablissementClientId]
+   OR dep.[Id] IS NULL
+   OR dep.[EtablissementClientId] IS NULL
+   OR dep.[EtablissementClientId] <> contrat.[EtablissementClientId]
+   OR d.[Id] IS NULL
+   OR d.[AgenceId] IS NULL
+   OR contrat.[AgenceOrigineId] IS NULL
+   OR contrat.[AgenceGestionnaireId] IS NULL
+   OR d.[AgenceId] <> contrat.[AgenceOrigineId]
+   OR d.[AgenceId] <> contrat.[AgenceGestionnaireId]
+   OR NOT EXISTS (
+       SELECT 1
+       FROM [Activite].[EtablissementsClientDossiersAgence] AS lien
+       WHERE lien.[EtablissementClientId] = contrat.[EtablissementClientId]
+         AND lien.[DossierAgenceId] = contrat.[DossierAgenceId]
+   );
+
+-- Chemin complet des factures : le client, son etablissement client, puis
+-- le dossier, l'agence et l'etablissement employeur doivent tous concorder.
+INSERT INTO @ControlesIdentite
+SELECT N'Factures_lignage_complet', COUNT_BIG(*),
+       N'Client/etablissement client et agence/dossier/etablissement concordants'
+FROM [Activite].[Factures] AS f
+LEFT JOIN [Activite].[Clients] AS c ON c.[Id] = f.[ClientId]
+LEFT JOIN [Activite].[EtablissementsClient] AS ec ON ec.[Id] = f.[EtablissementClientId]
+LEFT JOIN [Activite].[DepartementsEtablissementsClients] AS dep
+    ON dep.[Id] = f.[DepartementClientId]
+LEFT JOIN [Activite].[Agences] AS a ON a.[Id] = f.[AgenceId]
+LEFT JOIN [Activite].[Etablissements] AS e ON e.[Id] = f.[EtablissementId]
+LEFT JOIN [Activite].[Societes] AS s ON s.[Id] = e.[SocieteId]
+LEFT JOIN [Activite].[DossiersAgence] AS d
+    ON d.[Id] = f.[SpecialisationDossierAgenceId]
+WHERE c.[Id] IS NULL
+   OR ec.[Id] IS NULL
+   OR ec.[ClientId] IS NULL
+   OR ec.[ClientId] <> f.[ClientId]
+   OR dep.[Id] IS NULL
+   OR dep.[EtablissementClientId] IS NULL
+   OR dep.[EtablissementClientId] <> f.[EtablissementClientId]
+   OR a.[Id] IS NULL
+   OR e.[Id] IS NULL
+   OR s.[Id] IS NULL
+   OR d.[Id] IS NULL
+   OR d.[AgenceId] <> f.[AgenceId]
+   OR d.[EtablissementId] <> f.[EtablissementId]
+   OR NOT EXISTS (
+       SELECT 1
+       FROM [Activite].[EtablissementsClientDossiersAgence] AS lien
+       WHERE lien.[EtablissementClientId] = f.[EtablissementClientId]
+         AND lien.[DossierAgenceId] = f.[SpecialisationDossierAgenceId]
+   );
+
+SELECT
+    [Controle],
+    [NbAnomalies],
+    [Attendu],
+    CASE WHEN [NbAnomalies] = 0 THEN N'OK' ELSE N'ECHEC' END AS [Statut]
+FROM @ControlesIdentite
+ORDER BY [Controle];
+
+IF EXISTS (SELECT 1 FROM @ControlesIdentite WHERE [NbAnomalies] > 0)
+BEGIN
+    THROW 51002, 'Validation des identites legales et des lignages en echec. Consultez la grille de controles.', 1;
+END;
+
+PRINT N'Validation des identites legales et des lignages reussie.';
 GO
 """
 
