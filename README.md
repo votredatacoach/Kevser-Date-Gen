@@ -26,6 +26,8 @@ Le résultat se trouve dans `generated/client/` :
 
 ## Faire varier la taille
 
+Pour alourdir volontairement le **modèle existant dans SSMS**, sans ajouter de transactions métier, utiliser le [kit de charge Power BI > 1 Go](docs/modele-plus-de-1go.md). Il ajoute une colonne de texte aléatoire sur les factures, par lots, avec cible réglable et script de retrait. Les scripts `06`/`07` sont facultatifs et ne sont jamais exécutés par l'import standard.
+
 ```powershell
 # Environ la moitié du profil client
 .\scripts\generate.ps1 -Scale 0.5 -Output generated\client-50pct

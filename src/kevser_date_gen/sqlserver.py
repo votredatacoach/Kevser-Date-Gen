@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import SOURCE_DDL
+from .model_stress import ADD_STRESS_SQL, REMOVE_STRESS_SQL
 from .engine import (
     LOAD_ORDER,
     _ddl_column_types,
@@ -265,6 +266,8 @@ def write_sql_server_kit(
         "03_bulk_load.sql": _bulk_loader_sql(columns, row_counts, post_updates),
         "04_indexes.sql": _indexes_sql(),
         "05_validation.sql": _use_variable(_validation_sql()),
+        "06_model_stress_optional.sql": ADD_STRESS_SQL,
+        "07_remove_model_stress_optional.sql": REMOVE_STRESS_SQL,
         "99_run_all.sql": _run_all_sql(),
     }
     for name, content in files.items():
